@@ -1,0 +1,13 @@
+/.contextCLI/
+/contextCLI.egg-info/
+/tests/
+/architecture.md
+/architecture.txt
+/.claude/
+/bin/
+__pycache__/
+*.pyc
+.env
+.coverage
+dist/
+build/

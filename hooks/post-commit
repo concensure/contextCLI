@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Fail-open so commits are never blocked by reflection/provider issues.
+contextCLI auto-compaction || true
