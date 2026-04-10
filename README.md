@@ -188,8 +188,6 @@ The target project should ignore:
 
 `contextCLI init` adds those entries to `.gitignore` when possible.
 
-## Tests
+## For Maintainers
 
-```bash
-python -m unittest discover -s tests -p "test_*.py" -q
-```
+This repository keeps local test scaffolding out of the packaged project. The CI workflow runs tests when a `tests/` folder is present and otherwise runs a CLI smoke test.

@@ -14,6 +14,19 @@ from typing import Any, Optional
 
 from .summarizer import cheap_reflect
 
+SUPPORTED_PROVIDERS = {
+    "openai_compatible",
+    "together",
+    "openrouter",
+    "cerebras",
+    "anthropic",
+    "gemini",
+    "ollama",
+    "ollama_local",
+}
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -242,6 +255,15 @@ def _default_config(enable_pointers: bool) -> Config:
 def _with_overrides(cfg: Config, overrides: dict[str, Any]) -> Config:
     allowed = set(Config.__dataclass_fields__.keys())
     clean = {k: v for k, v in overrides.items() if k in allowed and v is not None}
+    if "api_provider" in clean:
+        clean["api_provider"] = str(clean["api_provider"]).strip().lower()
+        if clean["api_provider"] not in SUPPORTED_PROVIDERS:
+            allowed_providers = ", ".join(sorted(SUPPORTED_PROVIDERS))
+            raise SystemExit(f"Unsupported provider `{clean['api_provider']}`. Use one of: {allowed_providers}")
+    if "api_key_env" in clean:
+        clean["api_key_env"] = str(clean["api_key_env"]).strip()
+        if clean["api_key_env"] and not _ENV_NAME_RE.match(clean["api_key_env"]):
+            raise SystemExit("api_key_env must be a valid environment variable name, for example OPENROUTER_API_KEY.")
     return replace(cfg, **clean)
 
 
@@ -947,6 +969,12 @@ def doctor_report(repo: Path) -> dict[str, Any]:
         cfg = load_config(repo)
         lines.append(f"config: enable_pointers={cfg.enable_pointers} model={cfg.summarizer_model} provider={cfg.api_provider}")
         lines.append(f"config: max_pointer_lines={cfg.max_pointer_lines} max_events_bytes={cfg.max_events_bytes} max_backup_files={cfg.max_backup_files}")
+        if cfg.api_provider not in SUPPORTED_PROVIDERS:
+            ok = False
+            lines.append(f"BAD provider: {cfg.api_provider}")
+        if cfg.api_key_env and not _ENV_NAME_RE.match(cfg.api_key_env):
+            ok = False
+            lines.append(f"BAD api_key_env: {cfg.api_key_env}")
         if cfg.enable_pointers:
             key = os.environ.get(cfg.api_key_env, "")
             if cfg.api_provider in ("ollama", "ollama_local"):
