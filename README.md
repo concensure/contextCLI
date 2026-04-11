@@ -121,6 +121,8 @@ Run health checks:
 contextCLI doctor
 ```
 
+`doctor` checks the storage files, provider configuration, hook wiring, and whether `.gitignore` and `.env.example` were set up safely.
+
 Show effective configuration:
 
 ```bash
@@ -171,6 +173,8 @@ OPENROUTER_API_KEY=
 Use the env var name that matches your config. Do not put the actual key in `config.toml`.
 
 For local Ollama models, set `api_provider = "ollama"` and set `summarizer_model` to the local model name. Ollama usually does not need an API key. Configure the Ollama endpoint in `api_base_url` or with `OLLAMA_BASE_URL`.
+
+`contextCLI init` creates `.env.example` so a new user can see which variable names are supported before creating `.env`.
 
 ## Agent Integration
 

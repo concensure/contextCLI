@@ -572,6 +572,8 @@ def init_repo(
                     "GEMINI_API_KEY" + "=",
                     "",
                     "# Ollama is local and typically needs no key.",
+                    "# Set this only if Ollama is not using the default local endpoint.",
+                    "OLLAMA_BASE_URL" + "=",
                     "",
                 ]
             )
@@ -999,6 +1001,8 @@ def latest_checkpoint_id(repo: Path) -> str:
 
 def doctor_report(repo: Path) -> dict[str, Any]:
     root = repo / ".contextCLI"
+    gitignore = repo / ".gitignore"
+    env_example = repo / ".env.example"
     required_files = [
         root / "config.toml",
         root / "events.jsonl",
@@ -1037,6 +1041,29 @@ def doctor_report(repo: Path) -> dict[str, Any]:
         ok = False
         lines.append("MISSING dirs:")
         lines.extend([f"- {p}" for p in missing_dirs])
+
+    if not env_example.exists():
+        lines.append("env: .env.example missing (run `contextCLI init` to restore the template)")
+    else:
+        try:
+            env_example_text = env_example.read_text(encoding="utf-8")
+            if "OLLAMA_BASE_URL=" not in env_example_text:
+                lines.append("env: .env.example does not mention OLLAMA_BASE_URL")
+        except OSError as e:
+            ok = False
+            lines.append(f"env: cannot read .env.example: {type(e).__name__}: {e}")
+
+    try:
+        gitignore_text = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        if ".contextCLI/" not in gitignore_text:
+            ok = False
+            lines.append("gitignore: missing .contextCLI/ entry")
+        if "\n.env\n" not in "\n" + gitignore_text + "\n":
+            ok = False
+            lines.append("gitignore: missing .env entry")
+    except OSError as e:
+        ok = False
+        lines.append(f"gitignore: unreadable: {type(e).__name__}: {e}")
 
     # Parse JSON.
     for p in [root / "working_state.json", root / "current_context.json"]:
