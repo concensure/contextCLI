@@ -69,6 +69,12 @@ To let Git run contextCLI after each commit:
 git config core.hooksPath hooks
 ```
 
+Check whether Git is actually wired to use the generated hook:
+
+```bash
+contextCLI hooks status
+```
+
 ## Use It From Anywhere
 
 You do not have to `cd` into the target project if you pass `--repo`.
@@ -125,6 +131,7 @@ Install or remove hook templates:
 
 ```bash
 contextCLI hooks install
+contextCLI hooks status
 contextCLI hooks uninstall
 ```
 

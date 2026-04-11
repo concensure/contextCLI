@@ -243,6 +243,12 @@ def _git_branch(cwd: Path) -> str:
     return _sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
 
 
+def _git_hooks_path(cwd: Path) -> str:
+    if not (cwd / ".git").exists():
+        return ""
+    return _sh(["git", "config", "--get", "core.hooksPath"], cwd=cwd)
+
+
 def _git_diff_head(cwd: Path) -> str:
     if not (cwd / ".git").exists():
         return ""
@@ -407,6 +413,31 @@ def uninstall_hooks(repo: Path, *, git_hook: bool = False) -> list[str]:
         p.unlink()
         removed.append(str(p))
     return removed
+
+
+def hook_status(repo: Path) -> dict[str, Any]:
+    hooks_dir = repo / "hooks"
+    template_hook = hooks_dir / "post-commit"
+    git_dir = repo / ".git"
+    direct_git_hook = git_dir / "hooks" / "post-commit"
+    configured_hooks_path = _git_hooks_path(repo).strip()
+
+    if configured_hooks_path:
+        hooks_path_resolved = (repo / configured_hooks_path).resolve()
+    else:
+        hooks_path_resolved = None
+
+    using_repo_hooks_dir = hooks_path_resolved == hooks_dir.resolve() if hooks_path_resolved else False
+
+    return {
+        "is_git_repo": git_dir.exists(),
+        "template_hook_exists": template_hook.exists(),
+        "direct_git_hook_exists": direct_git_hook.exists(),
+        "configured_hooks_path": configured_hooks_path,
+        "using_repo_hooks_dir": using_repo_hooks_dir,
+        "template_hook_path": str(template_hook),
+        "direct_git_hook_path": str(direct_git_hook),
+    }
 
 
 def init_repo(
@@ -1101,15 +1132,24 @@ def doctor_report(repo: Path) -> dict[str, Any]:
         except OSError:
             pass
 
-    # Hook presence hints.
-    hooks_path = repo / "hooks" / "post-commit"
-    if hooks_path.exists():
+    hs = hook_status(repo)
+    if hs["template_hook_exists"]:
         lines.append("hook: hooks/post-commit present")
     else:
         lines.append("hook: hooks/post-commit missing (run `contextCLI init`)")
 
-    git_hook = repo / ".git" / "hooks" / "post-commit"
-    if git_hook.exists():
-        lines.append("hook: .git/hooks/post-commit installed")
+    if not hs["is_git_repo"]:
+        lines.append("hook: not a git repository")
+    else:
+        if hs["configured_hooks_path"]:
+            lines.append(f"hook: git core.hooksPath={hs['configured_hooks_path']}")
+            if hs["using_repo_hooks_dir"]:
+                lines.append("hook: git is configured to use hooks/post-commit")
+            else:
+                lines.append("hook: git uses a different hooks directory")
+        elif hs["direct_git_hook_exists"]:
+            lines.append("hook: .git/hooks/post-commit installed")
+        else:
+            lines.append("hook: git is not yet wired to run contextCLI automatically")
 
     return {"ok": ok, "lines": lines}

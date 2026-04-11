@@ -14,6 +14,7 @@ from .core import (
     events_count,
     init_repo,
     install_hooks,
+    hook_status,
     load_config,
     load_current_context,
     latest_checkpoint_id,
@@ -268,3 +269,27 @@ def cmd_hooks_uninstall(
         return
     for p in removed:
         typer.echo(f"removed: {p}")
+
+
+@hooks_app.command("status")
+def cmd_hooks_status(
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Show whether Git is configured to run contextCLI hooks."""
+    r = _repo_opt(repo)
+    ensure_repo_initialized(r)
+    hs = hook_status(r)
+    if json_output:
+        typer.echo(json.dumps(hs, indent=2, sort_keys=True))
+        return
+    typer.echo(f"repo: {r}")
+    typer.echo(f"template_hook_exists: {hs['template_hook_exists']}")
+    if not hs["is_git_repo"]:
+        typer.echo("git: not a repository")
+        return
+    if hs["configured_hooks_path"]:
+        typer.echo(f"git core.hooksPath: {hs['configured_hooks_path']}")
+        typer.echo(f"using_repo_hooks_dir: {hs['using_repo_hooks_dir']}")
+    else:
+        typer.echo(f"direct_git_hook_exists: {hs['direct_git_hook_exists']}")
