@@ -63,6 +63,9 @@ This creates:
 
 It also creates example hook files in `hooks/`.
 
+- `hooks/post-commit`
+- `hooks/claude-end-of-turn.sh`
+
 To let Git run contextCLI after each commit:
 
 ```bash
@@ -74,6 +77,8 @@ Check whether Git is actually wired to use the generated hook:
 ```bash
 contextCLI hooks status
 ```
+
+That command also shows whether the Claude end-of-turn template exists in `hooks/`.
 
 ## Use It From Anywhere
 

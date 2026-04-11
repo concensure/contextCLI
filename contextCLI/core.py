@@ -379,6 +379,24 @@ def hook_script() -> str:
     )
 
 
+def claude_end_of_turn_script() -> str:
+    return "\n".join(
+        [
+            "#!/usr/bin/env sh",
+            "set -eu",
+            "",
+            "# Optional Claude Code end-of-turn hook.",
+            "# Run this from a repository initialized with `contextCLI init`.",
+            "# The instruction can be passed as the first argument or via CONTEXTCLI_INSTRUCTION.",
+            "",
+            'instruction="${1:-${CONTEXTCLI_INSTRUCTION:-Claude turn completed}}"',
+            "",
+            "contextCLI update-context --instruction \"$instruction\" || true",
+            "",
+        ]
+    )
+
+
 def install_hooks(repo: Path, *, git_hook: bool = False) -> list[str]:
     installed: list[str] = []
     hooks_dir = repo / "hooks"
@@ -387,6 +405,10 @@ def install_hooks(repo: Path, *, git_hook: bool = False) -> list[str]:
     _atomic_write_text(post_commit, hook_script())
     _make_executable(post_commit)
     installed.append(str(post_commit))
+    claude_hook = hooks_dir / "claude-end-of-turn.sh"
+    _atomic_write_text(claude_hook, claude_end_of_turn_script())
+    _make_executable(claude_hook)
+    installed.append(str(claude_hook))
 
     if git_hook and (repo / ".git" / "hooks").exists():
         dst = repo / ".git" / "hooks" / "post-commit"
@@ -398,7 +420,7 @@ def install_hooks(repo: Path, *, git_hook: bool = False) -> list[str]:
 
 def uninstall_hooks(repo: Path, *, git_hook: bool = False) -> list[str]:
     removed: list[str] = []
-    targets = [repo / "hooks" / "post-commit"]
+    targets = [repo / "hooks" / "post-commit", repo / "hooks" / "claude-end-of-turn.sh"]
     if git_hook:
         targets.append(repo / ".git" / "hooks" / "post-commit")
     for p in targets:
@@ -408,7 +430,9 @@ def uninstall_hooks(repo: Path, *, git_hook: bool = False) -> list[str]:
             text = p.read_text(encoding="utf-8")
         except OSError:
             continue
-        if "contextCLI auto-compaction" not in text:
+        owns_post_commit = "contextCLI auto-compaction" in text
+        owns_claude_hook = "contextCLI update-context --instruction \"$instruction\" || true" in text
+        if not owns_post_commit and not owns_claude_hook:
             continue
         p.unlink()
         removed.append(str(p))
@@ -418,6 +442,7 @@ def uninstall_hooks(repo: Path, *, git_hook: bool = False) -> list[str]:
 def hook_status(repo: Path) -> dict[str, Any]:
     hooks_dir = repo / "hooks"
     template_hook = hooks_dir / "post-commit"
+    claude_hook = hooks_dir / "claude-end-of-turn.sh"
     git_dir = repo / ".git"
     direct_git_hook = git_dir / "hooks" / "post-commit"
     configured_hooks_path = _git_hooks_path(repo).strip()
@@ -432,10 +457,12 @@ def hook_status(repo: Path) -> dict[str, Any]:
     return {
         "is_git_repo": git_dir.exists(),
         "template_hook_exists": template_hook.exists(),
+        "claude_hook_exists": claude_hook.exists(),
         "direct_git_hook_exists": direct_git_hook.exists(),
         "configured_hooks_path": configured_hooks_path,
         "using_repo_hooks_dir": using_repo_hooks_dir,
         "template_hook_path": str(template_hook),
+        "claude_hook_path": str(claude_hook),
         "direct_git_hook_path": str(direct_git_hook),
     }
 
@@ -999,6 +1026,23 @@ def latest_checkpoint_id(repo: Path) -> str:
     return cps[-1].stem
 
 
+def _checkpoint_health(repo: Path, task_id: str) -> tuple[bool, str]:
+    cp = _checkpoints_dir(repo) / f"{task_id}.json"
+    if not cp.exists():
+        return False, "checkpoint: latest checkpoint missing from disk"
+    try:
+        snap = json.loads(cp.read_text(encoding="utf-8") or "{}")
+    except json.JSONDecodeError as e:
+        return False, f"checkpoint: latest checkpoint has bad JSON: {e}"
+    if not isinstance(snap, dict):
+        return False, "checkpoint: latest checkpoint is not a JSON object"
+    if str(snap.get("task_id", "")) != task_id:
+        return False, "checkpoint: latest checkpoint task_id does not match filename"
+    if "working_state" not in snap or "pointers_md" not in snap:
+        return False, "checkpoint: latest checkpoint is missing required fields"
+    return True, f"checkpoint: latest checkpoint {task_id} is readable"
+
+
 def doctor_report(repo: Path) -> dict[str, Any]:
     root = repo / ".contextCLI"
     gitignore = repo / ".gitignore"
@@ -1159,11 +1203,24 @@ def doctor_report(repo: Path) -> dict[str, Any]:
         except OSError:
             pass
 
+    latest_cp = latest_checkpoint_id(repo)
+    if latest_cp:
+        cp_ok, cp_line = _checkpoint_health(repo, latest_cp)
+        lines.append(cp_line)
+        if not cp_ok:
+            ok = False
+    else:
+        lines.append("checkpoint: none created yet")
+
     hs = hook_status(repo)
     if hs["template_hook_exists"]:
         lines.append("hook: hooks/post-commit present")
     else:
         lines.append("hook: hooks/post-commit missing (run `contextCLI init`)")
+    if hs["claude_hook_exists"]:
+        lines.append("hook: hooks/claude-end-of-turn.sh present")
+    else:
+        lines.append("hook: hooks/claude-end-of-turn.sh missing (run `contextCLI init`)")
 
     if not hs["is_git_repo"]:
         lines.append("hook: not a git repository")

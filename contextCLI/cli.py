@@ -285,6 +285,7 @@ def cmd_hooks_status(
         return
     typer.echo(f"repo: {r}")
     typer.echo(f"template_hook_exists: {hs['template_hook_exists']}")
+    typer.echo(f"claude_hook_exists: {hs['claude_hook_exists']}")
     if not hs["is_git_repo"]:
         typer.echo("git: not a repository")
         return
