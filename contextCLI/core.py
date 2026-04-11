@@ -26,6 +26,40 @@ SUPPORTED_PROVIDERS = {
 }
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROVIDER_DEFAULTS = {
+    "openai_compatible": {
+        "api_base_url": "https://api.openai.com/v1",
+        "api_key_env": "OPENAI_API_KEY",
+    },
+    "together": {
+        "api_base_url": "https://api.together.xyz/v1",
+        "api_key_env": "TOGETHER_API_KEY",
+    },
+    "openrouter": {
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+    },
+    "cerebras": {
+        "api_base_url": "https://api.cerebras.ai/v1",
+        "api_key_env": "CEREBRAS_API_KEY",
+    },
+    "anthropic": {
+        "api_base_url": "https://api.anthropic.com/v1",
+        "api_key_env": "ANTHROPIC_API_KEY",
+    },
+    "gemini": {
+        "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models",
+        "api_key_env": "GEMINI_API_KEY",
+    },
+    "ollama": {
+        "api_base_url": "",
+        "api_key_env": "",
+    },
+    "ollama_local": {
+        "api_base_url": "",
+        "api_key_env": "",
+    },
+}
 
 
 def _utc_now_iso() -> str:
@@ -111,6 +145,14 @@ def _atomic_write_text(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _make_executable(path: Path) -> None:
+    try:
+        mode = path.stat().st_mode
+        path.chmod(mode | 0o111)
+    except OSError:
+        pass
 
 
 def _atomic_write_json(path: Path, obj: Any) -> None:
@@ -260,6 +302,11 @@ def _with_overrides(cfg: Config, overrides: dict[str, Any]) -> Config:
         if clean["api_provider"] not in SUPPORTED_PROVIDERS:
             allowed_providers = ", ".join(sorted(SUPPORTED_PROVIDERS))
             raise SystemExit(f"Unsupported provider `{clean['api_provider']}`. Use one of: {allowed_providers}")
+        defaults = _PROVIDER_DEFAULTS[clean["api_provider"]]
+        if "api_base_url" not in clean and cfg.api_base_url == _PROVIDER_DEFAULTS[cfg.api_provider]["api_base_url"]:
+            clean["api_base_url"] = defaults["api_base_url"]
+        if "api_key_env" not in clean and cfg.api_key_env == _PROVIDER_DEFAULTS[cfg.api_provider]["api_key_env"]:
+            clean["api_key_env"] = defaults["api_key_env"]
     if "api_key_env" in clean:
         clean["api_key_env"] = str(clean["api_key_env"]).strip()
         if clean["api_key_env"] and not _ENV_NAME_RE.match(clean["api_key_env"]):
@@ -328,11 +375,13 @@ def install_hooks(repo: Path, *, git_hook: bool = False) -> list[str]:
     hooks_dir.mkdir(parents=True, exist_ok=True)
     post_commit = hooks_dir / "post-commit"
     _atomic_write_text(post_commit, hook_script())
+    _make_executable(post_commit)
     installed.append(str(post_commit))
 
     if git_hook and (repo / ".git" / "hooks").exists():
         dst = repo / ".git" / "hooks" / "post-commit"
         _atomic_write_text(dst, hook_script())
+        _make_executable(dst)
         installed.append(str(dst))
     return installed
 

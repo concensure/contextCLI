@@ -138,6 +138,8 @@ Or use the command:
 contextCLI configure --provider openrouter --model "MODEL_NAME" --api-key-env OPENROUTER_API_KEY
 ```
 
+When you choose a supported provider, contextCLI fills in the usual default base URL and API-key variable name for that provider. You can still override them explicitly.
+
 Important fields:
 
 - `api_provider`: provider name, such as `openai_compatible`, `together`, `openrouter`, `cerebras`, `anthropic`, `gemini`, or `ollama`
