@@ -364,6 +364,59 @@ def ensure_repo_initialized(repo: Path) -> None:
         raise SystemExit("Missing .contextCLI/. Run `contextCLI init` first.")
 
 
+def _write_gitignore_defaults(repo: Path) -> bool:
+    gitignore = repo / ".gitignore"
+    try:
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        if ".contextCLI/" in existing and "\n.env\n" in "\n" + existing + "\n":
+            return False
+        sep = "" if not existing or existing.endswith("\n") else "\n"
+        add = ""
+        if ".contextCLI/" not in existing:
+            add += ".contextCLI/\n"
+        if "\n.env\n" not in "\n" + existing + "\n":
+            add += ".env\n"
+        _atomic_write_text(gitignore, existing + sep + add)
+        return True
+    except OSError:
+        return False
+
+
+def _write_env_example(repo: Path) -> bool:
+    env_example = repo / ".env.example"
+    if env_example.exists():
+        return False
+    try:
+        env_example.write_text(
+            "\n".join(
+                [
+                    "# Copy to `.env` and fill values. Never commit `.env`.",
+                    "# OpenAI-compatible providers (OpenAI/Together/OpenRouter/Cerebras):",
+                    "OPENAI_API_KEY" + "=",
+                    "TOGETHER_API_KEY" + "=",
+                    "OPENROUTER_API_KEY" + "=",
+                    "CEREBRAS_API_KEY" + "=",
+                    "",
+                    "# Anthropic:",
+                    "ANTHROPIC_API_KEY" + "=",
+                    "",
+                    "# Gemini:",
+                    "GEMINI_API_KEY" + "=",
+                    "",
+                    "# Ollama is local and typically needs no key.",
+                    "# Set this only if Ollama is not using the default local endpoint.",
+                    "OLLAMA_BASE_URL" + "=",
+                    "",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
+
+
 def hook_script() -> str:
     return "\n".join(
         [
@@ -565,48 +618,59 @@ def init_repo(
     if install_git_hook and (repo / ".git" / "hooks").exists():
         install_hooks(repo, git_hook=True)
 
-    # Ensure `.contextCLI/` is ignored by default in target repos.
-    gitignore = repo / ".gitignore"
-    try:
-        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-        if ".contextCLI/" not in existing or ".env" not in existing:
-            sep = "" if not existing or existing.endswith("\n") else "\n"
-            add = ""
-            if ".contextCLI/" not in existing:
-                add += ".contextCLI/\n"
-            if "\n.env\n" not in "\n" + existing + "\n":
-                add += ".env\n"
-            _atomic_write_text(gitignore, existing + sep + add)
-    except OSError:
-        pass
+    _write_gitignore_defaults(repo)
+    _write_env_example(repo)
 
-    env_example = repo / ".env.example"
-    if not env_example.exists():
-        env_example.write_text(
-            "\n".join(
-                [
-                    "# Copy to `.env` and fill values. Never commit `.env`.",
-                    "# OpenAI-compatible providers (OpenAI/Together/OpenRouter/Cerebras):",
-                    "OPENAI_API_KEY" + "=",
-                    "TOGETHER_API_KEY" + "=",
-                    "OPENROUTER_API_KEY" + "=",
-                    "CEREBRAS_API_KEY" + "=",
-                    "",
-                    "# Anthropic:",
-                    "ANTHROPIC_API_KEY" + "=",
-                    "",
-                    "# Gemini:",
-                    "GEMINI_API_KEY" + "=",
-                    "",
-                    "# Ollama is local and typically needs no key.",
-                    "# Set this only if Ollama is not using the default local endpoint.",
-                    "OLLAMA_BASE_URL" + "=",
-                    "",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+
+def repair_repo(repo: Path, *, install_git_hook: bool = False, clear_stale_lock: bool = False) -> dict[str, Any]:
+    actions: list[str] = []
+    root = repo / ".contextCLI"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "artifacts" / "topics").mkdir(parents=True, exist_ok=True)
+    (root / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+    cfg_path = _config_path(repo)
+    if not cfg_path.exists():
+        write_config(repo, _default_config(enable_pointers=False))
+        actions.append("created .contextCLI/config.toml")
+
+    for p, default in [
+        (_events_path(repo), ""),
+        (_state_path(repo), {}),
+        (_pointers_path(repo), "# Pointers\n"),
+        (_current_context_path(repo), {}),
+    ]:
+        if p.exists():
+            continue
+        if p.suffix == ".json":
+            _atomic_write_json(p, default)
+        else:
+            _atomic_write_text(p, str(default))
+        actions.append(f"created {p.relative_to(repo)}")
+
+    installed = install_hooks(repo, git_hook=install_git_hook)
+    for path in installed:
+        actions.append(f"installed {Path(path).relative_to(repo)}")
+
+    if _write_gitignore_defaults(repo):
+        actions.append("updated .gitignore")
+    if _write_env_example(repo):
+        actions.append("created .env.example")
+
+    lock = _lock_path(repo)
+    if clear_stale_lock and lock.exists():
+        try:
+            age = time.time() - lock.stat().st_mtime
+        except OSError:
+            age = 0
+        if age > 600:
+            try:
+                lock.unlink(missing_ok=True)
+                actions.append("removed stale .contextCLI/.lock")
+            except OSError:
+                actions.append("failed to remove stale .contextCLI/.lock")
+
+    return {"ok": True, "actions": actions}
 
 
 def _render_config_toml(cfg: Config) -> str:

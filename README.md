@@ -128,6 +128,18 @@ contextCLI doctor
 
 `doctor` checks the storage files, provider configuration, hook wiring, and whether `.gitignore` and `.env.example` were set up safely.
 
+Repair a damaged or half-created setup without deleting your saved context:
+
+```bash
+contextCLI repair
+```
+
+If a stale `.contextCLI/.lock` file is left behind after a crash, you can ask repair to remove it:
+
+```bash
+contextCLI repair --clear-stale-lock
+```
+
 Show effective configuration:
 
 ```bash

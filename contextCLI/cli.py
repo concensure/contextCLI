@@ -26,6 +26,7 @@ from .core import (
     doctor_report,
     uninstall_hooks,
     update_config,
+    repair_repo,
 )
 
 app = typer.Typer(add_completion=False, invoke_without_command=True, no_args_is_help=False)
@@ -241,6 +242,18 @@ def cmd_doctor(
     else:
         for ln in rep["lines"]:
             typer.echo(ln)
+
+
+@app.command("repair")
+def cmd_repair(
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+    install_git_hook: Annotated[bool, typer.Option("--install-git-hook")] = False,
+    clear_stale_lock: Annotated[bool, typer.Option("--clear-stale-lock")] = False,
+) -> None:
+    """Recreate missing contextCLI files and templates without resetting normal state."""
+    r = _repo_opt(repo)
+    out = repair_repo(r, install_git_hook=install_git_hook, clear_stale_lock=clear_stale_lock)
+    typer.echo(json.dumps(out, indent=2, sort_keys=True))
 
 
 @hooks_app.command("install")
