@@ -673,6 +673,100 @@ def repair_repo(repo: Path, *, install_git_hook: bool = False, clear_stale_lock:
     return {"ok": True, "actions": actions}
 
 
+def export_state_bundle(repo: Path, cfg: Config, *, include_checkpoints: bool = True) -> dict[str, Any]:
+    bundle: dict[str, Any] = {
+        "schema_version": 1,
+        "exported_at": _utc_now_iso(),
+        "working_state": _read_json(_state_path(repo), {}),
+        "current_context": load_current_context(repo),
+        "pointers_md": _normalize_pointers(
+            _pointers_path(repo).read_text(encoding="utf-8") if _pointers_path(repo).exists() else "",
+            cfg.max_pointer_lines,
+        ),
+        "config": cfg.__dict__,
+    }
+    if include_checkpoints:
+        checkpoints: list[dict[str, Any]] = []
+        for cp in sorted(_checkpoints_dir(repo).glob("*.json"), key=lambda p: p.name):
+            snap = _read_json(cp, None)
+            if isinstance(snap, dict):
+                checkpoints.append(snap)
+        bundle["checkpoints"] = checkpoints
+    return bundle
+
+
+def import_state_bundle(
+    repo: Path,
+    bundle: dict[str, Any],
+    *,
+    replace_config: bool = False,
+    merge_checkpoints: bool = True,
+) -> dict[str, Any]:
+    actions: list[str] = []
+    repair_repo(repo)
+    ensure_repo_initialized(repo)
+
+    schema_version = int(bundle.get("schema_version", 0) or 0)
+    if schema_version != 1:
+        raise SystemExit(f"Unsupported export schema_version `{schema_version}`.")
+
+    working_state = bundle.get("working_state")
+    current_context = bundle.get("current_context")
+    pointers_md = bundle.get("pointers_md")
+    if not isinstance(working_state, dict):
+        raise SystemExit("Import bundle is missing a valid `working_state` object.")
+    if current_context is not None and not isinstance(current_context, dict):
+        raise SystemExit("Import bundle has invalid `current_context`.")
+    if pointers_md is not None and not isinstance(pointers_md, str):
+        raise SystemExit("Import bundle has invalid `pointers_md`.")
+
+    cfg = load_config(repo)
+    state = RepoState.from_json(working_state)
+    _write_state(repo, state, max_backup_files=cfg.max_backup_files)
+    actions.append("updated .contextCLI/working_state.json")
+
+    if isinstance(current_context, dict):
+        _write_current_context(repo, current_context, max_backup_files=cfg.max_backup_files)
+        actions.append("updated .contextCLI/current_context.json")
+
+    if isinstance(pointers_md, str):
+        _write_pointers(
+            repo,
+            _normalize_pointers(pointers_md, cfg.max_pointer_lines),
+            max_backup_files=cfg.max_backup_files,
+        )
+        actions.append("updated .contextCLI/pointers.md")
+
+    imported_config = bundle.get("config")
+    if replace_config and isinstance(imported_config, dict):
+        allowed = {k: v for k, v in imported_config.items() if k in Config.__dataclass_fields__}
+        new_cfg = _with_overrides(cfg, allowed)
+        write_config(repo, new_cfg)
+        actions.append("updated .contextCLI/config.toml")
+        cfg = new_cfg
+
+    if merge_checkpoints:
+        checkpoints = bundle.get("checkpoints")
+        if checkpoints is not None and not isinstance(checkpoints, list):
+            raise SystemExit("Import bundle has invalid `checkpoints`.")
+        imported = 0
+        for snap in checkpoints or []:
+            if not isinstance(snap, dict):
+                continue
+            task_id = str(snap.get("task_id", "")).strip()
+            if not task_id:
+                continue
+            cp_path = _checkpoints_dir(repo) / f"{task_id}.json"
+            if cp_path.exists():
+                continue
+            _atomic_write_json(cp_path, snap)
+            imported += 1
+        if imported:
+            actions.append(f"imported {imported} checkpoints")
+
+    return {"ok": True, "actions": actions}
+
+
 def _render_config_toml(cfg: Config) -> str:
     return (
         "\n".join(

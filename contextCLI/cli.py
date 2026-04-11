@@ -27,6 +27,8 @@ from .core import (
     uninstall_hooks,
     update_config,
     repair_repo,
+    export_state_bundle,
+    import_state_bundle,
 )
 
 app = typer.Typer(add_completion=False, invoke_without_command=True, no_args_is_help=False)
@@ -253,6 +255,43 @@ def cmd_repair(
     """Recreate missing contextCLI files and templates without resetting normal state."""
     r = _repo_opt(repo)
     out = repair_repo(r, install_git_hook=install_git_hook, clear_stale_lock=clear_stale_lock)
+    typer.echo(json.dumps(out, indent=2, sort_keys=True))
+
+
+@app.command("export-state")
+def cmd_export_state(
+    out: Annotated[Path, typer.Option("--out", dir_okay=False, writable=True)],
+    include_checkpoints: Annotated[bool, typer.Option("--checkpoints/--no-checkpoints")] = True,
+    no_dotenv: Annotated[bool, typer.Option("--no-dotenv")] = False,
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+) -> None:
+    """Export distilled context into a portable JSON bundle."""
+    r = _repo_opt(repo)
+    ensure_repo_initialized(r)
+    cfg = _config_for_repo(r, no_dotenv=no_dotenv)
+    bundle = export_state_bundle(r, cfg, include_checkpoints=include_checkpoints)
+    out.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    typer.echo(str(out))
+
+
+@app.command("import-state")
+def cmd_import_state(
+    bundle_path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    replace_config: Annotated[bool, typer.Option("--replace-config/--keep-config")] = False,
+    merge_checkpoints: Annotated[bool, typer.Option("--merge-checkpoints/--no-merge-checkpoints")] = True,
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+) -> None:
+    """Import a portable JSON bundle into a repo's `.contextCLI` state."""
+    r = _repo_opt(repo)
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise SystemExit("Import bundle must be a JSON object.")
+    out = import_state_bundle(
+        r,
+        data,
+        replace_config=replace_config,
+        merge_checkpoints=merge_checkpoints,
+    )
     typer.echo(json.dumps(out, indent=2, sort_keys=True))
 
 

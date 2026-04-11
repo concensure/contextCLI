@@ -140,6 +140,20 @@ If a stale `.contextCLI/.lock` file is left behind after a crash, you can ask re
 contextCLI repair --clear-stale-lock
 ```
 
+Export a portable bundle of the distilled state, pointers, current context, config, and checkpoints:
+
+```bash
+contextCLI export-state --out contextCLI-export.json
+```
+
+Import that bundle into another repo:
+
+```bash
+contextCLI import-state contextCLI-export.json --repo "PATH_TO_PROJECT"
+```
+
+By default, import keeps the target repo's existing provider configuration and only merges checkpoints that are not already present.
+
 Show effective configuration:
 
 ```bash
