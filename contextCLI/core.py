@@ -62,6 +62,10 @@ _PROVIDER_DEFAULTS = {
 }
 
 
+def _provider_default(name: str, field: str) -> str:
+    return str(_PROVIDER_DEFAULTS.get(name, {}).get(field, ""))
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -1024,6 +1028,24 @@ def doctor_report(repo: Path) -> dict[str, Any]:
         if cfg.api_key_env and not _ENV_NAME_RE.match(cfg.api_key_env):
             ok = False
             lines.append(f"BAD api_key_env: {cfg.api_key_env}")
+        expected_base = _provider_default(cfg.api_provider, "api_base_url")
+        expected_key_env = _provider_default(cfg.api_provider, "api_key_env")
+        if cfg.api_provider in {"ollama", "ollama_local"}:
+            if not cfg.api_base_url and not os.environ.get("OLLAMA_BASE_URL", ""):
+                lines.append("provider: ollama endpoint not set (configure api_base_url or OLLAMA_BASE_URL)")
+            if cfg.api_key_env:
+                lines.append("provider: ollama does not usually need api_key_env")
+        else:
+            if not cfg.api_base_url:
+                ok = False
+                lines.append("provider: api_base_url is empty")
+            elif expected_base and cfg.api_base_url != expected_base:
+                lines.append(f"provider: custom api_base_url in use ({cfg.api_base_url})")
+            if not cfg.api_key_env:
+                ok = False
+                lines.append("provider: api_key_env is empty")
+            elif expected_key_env and cfg.api_key_env != expected_key_env:
+                lines.append(f"provider: custom api_key_env in use ({cfg.api_key_env})")
         if cfg.enable_pointers:
             key = os.environ.get(cfg.api_key_env, "")
             if cfg.api_provider in ("ollama", "ollama_local"):

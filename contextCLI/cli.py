@@ -199,6 +199,10 @@ def cmd_configure(
     model: Annotated[Optional[str], typer.Option("--model", help="Summarizer model name.")] = None,
     api_key_env: Annotated[Optional[str], typer.Option("--api-key-env", help="Environment variable containing the API key.")] = None,
     api_base_url: Annotated[Optional[str], typer.Option("--api-base-url", help="Provider API base URL.")] = None,
+    enable_pointers: Annotated[Optional[bool], typer.Option("--enable-pointers/--disable-pointers")] = None,
+    load_env_file: Annotated[Optional[bool], typer.Option("--load-env-file/--no-load-env-file")] = None,
+    capture_git_patch: Annotated[Optional[bool], typer.Option("--capture-git-patch/--no-capture-git-patch")] = None,
+    redact_event_secrets: Annotated[Optional[bool], typer.Option("--redact-event-secrets/--no-redact-event-secrets")] = None,
     repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
 ) -> None:
     """Update provider/model config without storing any API key value."""
@@ -211,6 +215,10 @@ def cmd_configure(
             "summarizer_model": model,
             "api_key_env": api_key_env,
             "api_base_url": api_base_url,
+            "enable_pointers": enable_pointers,
+            "load_env_file": load_env_file,
+            "capture_git_patch": capture_git_patch,
+            "redact_event_secrets": redact_event_secrets,
         },
     )
     typer.echo(json.dumps(cfg.__dict__, indent=2, sort_keys=True))

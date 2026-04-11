@@ -149,6 +149,12 @@ Important fields:
 - `capture_git_patch`: whether post-commit compaction stores full patch text; default is off
 - `redact_event_secrets`: whether contextCLI redacts common secret patterns before writing events
 
+You can also change the main safety flags from the CLI:
+
+```bash
+contextCLI configure --enable-pointers --load-env-file --no-capture-git-patch --redact-event-secrets
+```
+
 For hosted providers, put the actual key in a `.env` file in the target project:
 
 ```env
