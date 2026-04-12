@@ -11,7 +11,7 @@ Key instructions:
 
   contextCLI checkpoint --note "Short handoff note"
 
+- A common pattern is token-saving model handoff: one model plans, another model resumes from the checkpoint and pointers.
 - Use `pointers.md` to locate relevant files quickly, then read the referenced files before editing.
 
 Task complete messages may end with: "Task complete - context automatically persisted."
-

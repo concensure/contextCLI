@@ -19,6 +19,7 @@ The storage lives inside the project you initialize: `.contextCLI/`. If you use 
 - Keep a small `pointers.md` file instead of pasting long transcripts into prompts.
 - Let Git hooks and agent hooks update context automatically.
 - Keep a local audit trail and checkpoints for handoff.
+- Hand work from one model to another with less prompt bloat, for example planning in Claude Opus and coding in Claude Sonnet.
 
 ## Install
 
@@ -53,6 +54,7 @@ This creates:
 ```text
 .contextCLI/
   config.toml
+  metadata.json
   events.jsonl
   working_state.json
   pointers.md
@@ -120,6 +122,12 @@ Resume from the latest checkpoint:
 contextCLI resume latest
 ```
 
+One common use case is token-saving handover between different models. For example:
+
+1. Use a stronger planning model to explore architecture and leave a distilled checkpoint.
+2. Switch to a cheaper or faster coding model.
+3. Resume with `contextCLI resume latest` instead of pasting a long planning transcript.
+
 Run health checks:
 
 ```bash
@@ -127,6 +135,13 @@ contextCLI doctor
 ```
 
 `doctor` checks the storage files, provider configuration, hook wiring, and whether `.gitignore` and `.env.example` were set up safely.
+It exits with a non-zero status when it finds a problem, so you can use it in scripts or CI.
+
+Normalize old or partially upgraded storage files to the current schema:
+
+```bash
+contextCLI migrate
+```
 
 Repair a damaged or half-created setup without deleting your saved context:
 
@@ -152,7 +167,8 @@ Import that bundle into another repo:
 contextCLI import-state contextCLI-export.json --repo "PATH_TO_PROJECT"
 ```
 
-By default, import keeps the target repo's existing provider configuration and only merges checkpoints that are not already present.
+By default, export redacts secret-like text patterns from the portable bundle. Import keeps the target repo's existing provider configuration and only merges checkpoints that are not already present.
+If the import file is malformed, `contextCLI` stops with a readable validation error instead of partially importing it.
 
 Show effective configuration:
 

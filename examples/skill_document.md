@@ -30,6 +30,8 @@ Before pausing or handing off:
 contextCLI checkpoint --note "Short handoff note"
 ```
 
+This is useful for token-saving handoff between models, for example using a planning-oriented model first and then resuming with a coding-oriented model.
+
 To resume:
 
 ```bash

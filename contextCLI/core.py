@@ -60,6 +60,7 @@ _PROVIDER_DEFAULTS = {
         "api_key_env": "",
     },
 }
+STORAGE_SCHEMA_VERSION = 1
 
 
 def _provider_default(name: str, field: str) -> str:
@@ -281,6 +282,36 @@ def redact_text(text: str) -> str:
     return redacted
 
 
+def _has_secret_pattern(text: str) -> bool:
+    return any(pat.search(text) for pat in _SECRET_PATTERNS)
+
+
+def _find_secret_paths(obj: Any, prefix: str, *, limit: int = 5) -> list[str]:
+    hits: list[str] = []
+
+    def walk(value: Any, path: str) -> None:
+        if len(hits) >= limit:
+            return
+        if isinstance(value, str):
+            if _has_secret_pattern(value):
+                hits.append(path)
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                walk(child, f"{path}.{key}")
+                if len(hits) >= limit:
+                    return
+            return
+        if isinstance(value, list):
+            for idx, child in enumerate(value):
+                walk(child, f"{path}[{idx}]")
+                if len(hits) >= limit:
+                    return
+
+    walk(obj, prefix)
+    return hits
+
+
 @dataclass(frozen=True)
 class Config:
     max_pointer_lines: int = 200
@@ -344,6 +375,10 @@ def _current_context_path(repo: Path) -> Path:
     return repo / ".contextCLI" / "current_context.json"
 
 
+def _metadata_path(repo: Path) -> Path:
+    return repo / ".contextCLI" / "metadata.json"
+
+
 def _artifacts_dir(repo: Path) -> Path:
     return repo / ".contextCLI" / "artifacts"
 
@@ -362,6 +397,31 @@ def _lock_path(repo: Path) -> Path:
 def ensure_repo_initialized(repo: Path) -> None:
     if not (repo / ".contextCLI").exists():
         raise SystemExit("Missing .contextCLI/. Run `contextCLI init` first.")
+
+
+def _metadata_template() -> dict[str, Any]:
+    now = _utc_now_iso()
+    return {
+        "schema_version": STORAGE_SCHEMA_VERSION,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def load_metadata(repo: Path) -> dict[str, Any]:
+    obj = _read_json(_metadata_path(repo), {})
+    return obj if isinstance(obj, dict) else {}
+
+
+def _touch_metadata(repo: Path) -> None:
+    current = load_metadata(repo)
+    created_at = str(current.get("created_at", "") or _utc_now_iso())
+    obj = {
+        "schema_version": STORAGE_SCHEMA_VERSION,
+        "created_at": created_at,
+        "updated_at": _utc_now_iso(),
+    }
+    _atomic_write_json(_metadata_path(repo), obj)
 
 
 def _write_gitignore_defaults(repo: Path) -> bool:
@@ -598,6 +658,7 @@ def init_repo(
         update_config(repo, config_overrides)
 
     for p, default in [
+        (_metadata_path(repo), _metadata_template()),
         (_events_path(repo), None),
         (_state_path(repo), {}),
         (_pointers_path(repo), "# Pointers\n"),
@@ -635,6 +696,7 @@ def repair_repo(repo: Path, *, install_git_hook: bool = False, clear_stale_lock:
         actions.append("created .contextCLI/config.toml")
 
     for p, default in [
+        (_metadata_path(repo), _metadata_template()),
         (_events_path(repo), ""),
         (_state_path(repo), {}),
         (_pointers_path(repo), "# Pointers\n"),
@@ -670,19 +732,43 @@ def repair_repo(repo: Path, *, install_git_hook: bool = False, clear_stale_lock:
             except OSError:
                 actions.append("failed to remove stale .contextCLI/.lock")
 
+    _touch_metadata(repo)
     return {"ok": True, "actions": actions}
 
 
-def export_state_bundle(repo: Path, cfg: Config, *, include_checkpoints: bool = True) -> dict[str, Any]:
+def migrate_repo(repo: Path) -> dict[str, Any]:
+    actions: list[str] = []
+    repair_repo(repo)
+    meta = load_metadata(repo)
+    version = int(meta.get("schema_version", 0) or 0)
+    if version != STORAGE_SCHEMA_VERSION:
+        _touch_metadata(repo)
+        actions.append(f"updated metadata schema_version to {STORAGE_SCHEMA_VERSION}")
+    else:
+        _touch_metadata(repo)
+        actions.append("refreshed .contextCLI/metadata.json")
+    return {"ok": True, "actions": actions, "schema_version": STORAGE_SCHEMA_VERSION}
+
+
+def export_state_bundle(repo: Path, cfg: Config, *, include_checkpoints: bool = True, redact: bool = True) -> dict[str, Any]:
+    working_state = _read_json(_state_path(repo), {})
+    current_context = load_current_context(repo)
+    pointers_md = _normalize_pointers(
+        _pointers_path(repo).read_text(encoding="utf-8") if _pointers_path(repo).exists() else "",
+        cfg.max_pointer_lines,
+    )
+    if redact:
+        working_state = _redact_obj(working_state)
+        current_context = _redact_obj(current_context)
+        pointers_md = redact_text(pointers_md)
     bundle: dict[str, Any] = {
         "schema_version": 1,
+        "storage_schema_version": STORAGE_SCHEMA_VERSION,
         "exported_at": _utc_now_iso(),
-        "working_state": _read_json(_state_path(repo), {}),
-        "current_context": load_current_context(repo),
-        "pointers_md": _normalize_pointers(
-            _pointers_path(repo).read_text(encoding="utf-8") if _pointers_path(repo).exists() else "",
-            cfg.max_pointer_lines,
-        ),
+        "metadata": load_metadata(repo),
+        "working_state": working_state,
+        "current_context": current_context,
+        "pointers_md": pointers_md,
         "config": cfg.__dict__,
     }
     if include_checkpoints:
@@ -690,6 +776,8 @@ def export_state_bundle(repo: Path, cfg: Config, *, include_checkpoints: bool = 
         for cp in sorted(_checkpoints_dir(repo).glob("*.json"), key=lambda p: p.name):
             snap = _read_json(cp, None)
             if isinstance(snap, dict):
+                if redact:
+                    snap = _redact_obj(snap)
                 checkpoints.append(snap)
         bundle["checkpoints"] = checkpoints
     return bundle
@@ -709,6 +797,11 @@ def import_state_bundle(
     schema_version = int(bundle.get("schema_version", 0) or 0)
     if schema_version != 1:
         raise SystemExit(f"Unsupported export schema_version `{schema_version}`.")
+    storage_schema = int(bundle.get("storage_schema_version", STORAGE_SCHEMA_VERSION) or STORAGE_SCHEMA_VERSION)
+    if storage_schema > STORAGE_SCHEMA_VERSION:
+        raise SystemExit(
+            f"Import bundle requires storage schema `{storage_schema}`, but this build supports `{STORAGE_SCHEMA_VERSION}`."
+        )
 
     working_state = bundle.get("working_state")
     current_context = bundle.get("current_context")
@@ -737,6 +830,21 @@ def import_state_bundle(
         )
         actions.append("updated .contextCLI/pointers.md")
 
+    imported_metadata = bundle.get("metadata")
+    if isinstance(imported_metadata, dict):
+        created_at = str(imported_metadata.get("created_at", "") or _utc_now_iso())
+        _atomic_write_json(
+            _metadata_path(repo),
+            {
+                "schema_version": STORAGE_SCHEMA_VERSION,
+                "created_at": created_at,
+                "updated_at": _utc_now_iso(),
+            },
+        )
+        actions.append("updated .contextCLI/metadata.json")
+    else:
+        _touch_metadata(repo)
+
     imported_config = bundle.get("config")
     if replace_config and isinstance(imported_config, dict):
         allowed = {k: v for k, v in imported_config.items() if k in Config.__dataclass_fields__}
@@ -751,11 +859,10 @@ def import_state_bundle(
             raise SystemExit("Import bundle has invalid `checkpoints`.")
         imported = 0
         for snap in checkpoints or []:
-            if not isinstance(snap, dict):
-                continue
+            ok, msg = _validate_checkpoint_snapshot(snap)
+            if not ok:
+                raise SystemExit(f"Import bundle has invalid checkpoint: {msg}.")
             task_id = str(snap.get("task_id", "")).strip()
-            if not task_id:
-                continue
             cp_path = _checkpoints_dir(repo) / f"{task_id}.json"
             if cp_path.exists():
                 continue
@@ -1192,13 +1299,31 @@ def _checkpoint_health(repo: Path, task_id: str) -> tuple[bool, str]:
         snap = json.loads(cp.read_text(encoding="utf-8") or "{}")
     except json.JSONDecodeError as e:
         return False, f"checkpoint: latest checkpoint has bad JSON: {e}"
-    if not isinstance(snap, dict):
-        return False, "checkpoint: latest checkpoint is not a JSON object"
-    if str(snap.get("task_id", "")) != task_id:
-        return False, "checkpoint: latest checkpoint task_id does not match filename"
-    if "working_state" not in snap or "pointers_md" not in snap:
-        return False, "checkpoint: latest checkpoint is missing required fields"
+    ok, msg = _validate_checkpoint_snapshot(snap, expected_task_id=task_id)
+    if not ok:
+        return False, f"checkpoint: {msg}"
     return True, f"checkpoint: latest checkpoint {task_id} is readable"
+
+
+def _validate_checkpoint_snapshot(snap: Any, *, expected_task_id: str = "") -> tuple[bool, str]:
+    if not isinstance(snap, dict):
+        return False, "checkpoint is not a JSON object"
+    task_id = str(snap.get("task_id", "")).strip()
+    if not task_id:
+        return False, "checkpoint is missing task_id"
+    if expected_task_id and task_id != expected_task_id:
+        return False, "latest checkpoint task_id does not match filename"
+    if "working_state" not in snap or not isinstance(snap.get("working_state"), dict):
+        return False, "checkpoint is missing working_state"
+    if "pointers_md" not in snap or not isinstance(snap.get("pointers_md"), str):
+        return False, "checkpoint is missing pointers_md"
+    current_context = snap.get("current_context")
+    if current_context is not None and not isinstance(current_context, dict):
+        return False, "checkpoint has invalid current_context"
+    note = snap.get("note")
+    if note is not None and not isinstance(note, str):
+        return False, "checkpoint has invalid note"
+    return True, ""
 
 
 def doctor_report(repo: Path) -> dict[str, Any]:
@@ -1207,6 +1332,7 @@ def doctor_report(repo: Path) -> dict[str, Any]:
     env_example = repo / ".env.example"
     required_files = [
         root / "config.toml",
+        root / "metadata.json",
         root / "events.jsonl",
         root / "working_state.json",
         root / "pointers.md",
@@ -1268,7 +1394,7 @@ def doctor_report(repo: Path) -> dict[str, Any]:
         lines.append(f"gitignore: unreadable: {type(e).__name__}: {e}")
 
     # Parse JSON.
-    for p in [root / "working_state.json", root / "current_context.json"]:
+    for p in [root / "metadata.json", root / "working_state.json", root / "current_context.json"]:
         if not p.exists():
             continue
         try:
@@ -1276,6 +1402,41 @@ def doctor_report(repo: Path) -> dict[str, Any]:
         except json.JSONDecodeError as e:
             ok = False
             lines.append(f"BAD JSON: {p.name}: {e}")
+
+    meta = load_metadata(repo) if (root / "metadata.json").exists() else {}
+    if meta:
+        meta_version = int(meta.get("schema_version", 0) or 0)
+        lines.append(f"metadata: schema_version={meta_version}")
+        if meta_version != STORAGE_SCHEMA_VERSION:
+            ok = False
+            lines.append(
+                f"metadata: unsupported schema_version {meta_version} (expected {STORAGE_SCHEMA_VERSION}); run `contextCLI migrate`"
+            )
+    secret_hits: list[str] = []
+    for path, obj in [
+        ("working_state", _read_json(root / "working_state.json", {})),
+        ("current_context", _read_json(root / "current_context.json", {})),
+    ]:
+        secret_hits.extend(_find_secret_paths(obj, path))
+    pointers_p = root / "pointers.md"
+    if pointers_p.exists():
+        try:
+            pointers_text = pointers_p.read_text(encoding="utf-8")
+            if _has_secret_pattern(pointers_text):
+                secret_hits.append("pointers.md")
+        except OSError:
+            pass
+    latest_cp_id = latest_checkpoint_id(repo)
+    if latest_cp_id:
+        latest_cp = _read_json(_checkpoints_dir(repo) / f"{latest_cp_id}.json", {})
+        secret_hits.extend(_find_secret_paths(latest_cp, f"checkpoints.{latest_cp_id}"))
+    if secret_hits:
+        ok = False
+        lines.append("secrets: possible secret-like values found in persisted state:")
+        for hit in secret_hits[:5]:
+            lines.append(f"- {hit}")
+        if len(secret_hits) > 5:
+            lines.append(f"- ... ({len(secret_hits) - 5} more)")
 
     # Config parse.
     try:

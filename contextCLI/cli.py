@@ -29,6 +29,7 @@ from .core import (
     repair_repo,
     export_state_bundle,
     import_state_bundle,
+    migrate_repo,
 )
 
 app = typer.Typer(add_completion=False, invoke_without_command=True, no_args_is_help=False)
@@ -244,6 +245,8 @@ def cmd_doctor(
     else:
         for ln in rep["lines"]:
             typer.echo(ln)
+    if not rep.get("ok", False):
+        raise typer.Exit(1)
 
 
 @app.command("repair")
@@ -258,10 +261,21 @@ def cmd_repair(
     typer.echo(json.dumps(out, indent=2, sort_keys=True))
 
 
+@app.command("migrate")
+def cmd_migrate(
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+) -> None:
+    """Normalize repo-local storage metadata to the current supported schema."""
+    r = _repo_opt(repo)
+    out = migrate_repo(r)
+    typer.echo(json.dumps(out, indent=2, sort_keys=True))
+
+
 @app.command("export-state")
 def cmd_export_state(
     out: Annotated[Path, typer.Option("--out", dir_okay=False, writable=True)],
     include_checkpoints: Annotated[bool, typer.Option("--checkpoints/--no-checkpoints")] = True,
+    redact: Annotated[bool, typer.Option("--redact/--no-redact")] = True,
     no_dotenv: Annotated[bool, typer.Option("--no-dotenv")] = False,
     repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
 ) -> None:
@@ -269,7 +283,7 @@ def cmd_export_state(
     r = _repo_opt(repo)
     ensure_repo_initialized(r)
     cfg = _config_for_repo(r, no_dotenv=no_dotenv)
-    bundle = export_state_bundle(r, cfg, include_checkpoints=include_checkpoints)
+    bundle = export_state_bundle(r, cfg, include_checkpoints=include_checkpoints, redact=redact)
     out.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     typer.echo(str(out))
 
@@ -283,7 +297,10 @@ def cmd_import_state(
 ) -> None:
     """Import a portable JSON bundle into a repo's `.contextCLI` state."""
     r = _repo_opt(repo)
-    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"Import bundle is not valid JSON: {e}") from e
     if not isinstance(data, dict):
         raise SystemExit("Import bundle must be a JSON object.")
     out = import_state_bundle(
