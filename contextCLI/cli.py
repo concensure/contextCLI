@@ -6,26 +6,46 @@ from typing import Annotated, Optional
 
 import typer
 
-from .core import (
+from .utils import load_dotenv
+from .storage import (
     Checkpoint,
     RepoState,
-    load_dotenv,
-    ensure_repo_initialized,
-    events_count,
-    init_repo,
-    install_hooks,
-    hook_status,
-    load_config,
-    load_current_context,
-    latest_checkpoint_id,
     load_state,
+    load_current_context,
+)
+from .config import (
+    load_config,
+    update_config,
+)
+from .metrics import (
+    events_count,
+    latest_checkpoint_id,
+    load_metrics_history,
+    metrics_report,
+    metrics_history_report,
+    record_metrics_snapshot,
+    metrics_markdown_report,
+)
+from .hooks import (
+    install_hooks,
+    uninstall_hooks,
+    hook_status,
+    configure_hooks_path,
+)
+from .assembler import (
     resume_prefix,
+    status_summary,
+)
+from .doctor import (
+    doctor_report,
+    doctor_exit_ok,
+    validate_provider,
+)
+from .core import (
+    ensure_repo_initialized,
+    init_repo,
     run_auto_compaction,
     run_update_context,
-    status_summary,
-    doctor_report,
-    uninstall_hooks,
-    update_config,
     repair_repo,
     export_state_bundle,
     import_state_bundle,
@@ -167,6 +187,137 @@ def cmd_status(
         typer.echo(extra.strip() + "\n\n" + s["text"])
 
 
+@app.command("metrics")
+def cmd_metrics(
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    recent_event_limit: Annotated[int, typer.Option("--recent-event-limit", min=1, max=500)] = 20,
+    task_id: Annotated[str, typer.Option("--task-id")] = "latest",
+    record: Annotated[bool, typer.Option("--record/--no-record")] = False,
+    no_dotenv: Annotated[bool, typer.Option("--no-dotenv")] = False,
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+) -> None:
+    """Show objective context size metrics and an estimated token-savings comparison."""
+    r = _repo_opt(repo)
+    ensure_repo_initialized(r)
+    cfg = _config_for_repo(r, no_dotenv=no_dotenv)
+    rep = metrics_report(r, cfg, recent_event_limit=recent_event_limit, task_id=task_id)
+    if record:
+        rep["recorded_snapshot"] = record_metrics_snapshot(r, rep)
+    if json_output:
+        typer.echo(json.dumps(rep, indent=2, sort_keys=True))
+        return
+    typer.echo(f"repo: {r}")
+    typer.echo(f"comparison: {rep['assumptions']['comparison']}")
+    typer.echo(f"assumption: ~1 token per 4 chars, recent_event_limit={rep['assumptions']['recent_event_limit']}")
+    typer.echo("")
+    typer.echo(f"resume_tokens_est: {rep['sizes']['resume_tokens_est']}")
+    typer.echo(f"raw_recent_events_tokens_est: {rep['sizes']['raw_recent_events_tokens_est']}")
+    typer.echo(f"tokens_saved_vs_raw_recent_events: {rep['savings_estimate']['tokens_saved_vs_raw_recent_events']}")
+    typer.echo(f"percent_saved_vs_raw_recent_events: {rep['savings_estimate']['percent_saved_vs_raw_recent_events']}%")
+    typer.echo(f"resume_to_raw_recent_events_ratio: {rep['efficiency']['resume_to_raw_recent_events_ratio']}")
+    typer.echo(f"resume_smaller_than_raw_recent_events: {rep['efficiency']['resume_smaller_than_raw_recent_events']}")
+    typer.echo(f"recommendation: {rep['efficiency']['recommendation']}")
+    typer.echo("")
+    typer.echo(f"events: {rep['counts']['events']}")
+    typer.echo(f"recent_events_used: {rep['counts']['recent_events_used']}")
+    typer.echo(f"checkpoints: {rep['counts']['checkpoints']}")
+    typer.echo(f"pointer_lines: {rep['counts']['pointer_lines']}")
+    if record:
+        typer.echo("metrics_snapshot_recorded: true")
+
+
+@app.command("metrics-history")
+def cmd_metrics_history(
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=200)] = 10,
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+) -> None:
+    """Show recent recorded metrics snapshots and the delta from the previous snapshot."""
+    r = _repo_opt(repo)
+    ensure_repo_initialized(r)
+    rep = metrics_history_report(r, limit=limit)
+    if json_output:
+        typer.echo(json.dumps(rep, indent=2, sort_keys=True))
+        return
+    typer.echo(f"repo: {r}")
+    typer.echo(f"history_count: {rep['count']}")
+    typer.echo(f"trend_direction: {rep['trend']['direction']}")
+    typer.echo(f"delta_resume_tokens_est: {rep['delta']['resume_tokens_est']}")
+    typer.echo(f"delta_tokens_saved_vs_raw_recent_events: {rep['delta']['tokens_saved_vs_raw_recent_events']}")
+    typer.echo(f"recommendation: {rep['trend']['recommendation']}")
+    if not rep["entries"]:
+        typer.echo("No metrics snapshots recorded yet.")
+        return
+    typer.echo("")
+    for entry in rep["entries"]:
+        ts = str(entry.get("ts", ""))
+        sizes = entry.get("sizes") or {}
+        savings = entry.get("savings_estimate") or {}
+        efficiency = entry.get("efficiency") or {}
+        typer.echo(
+            f"{ts} | resume_tokens_est={sizes.get('resume_tokens_est', 0)} | "
+            f"saved={savings.get('tokens_saved_vs_raw_recent_events', 0)} | "
+            f"smaller={efficiency.get('resume_smaller_than_raw_recent_events', False)}"
+        )
+
+
+@app.command("metrics-report")
+def cmd_metrics_report(
+    out: Annotated[Optional[Path], typer.Option("--out", dir_okay=False, writable=True)] = None,
+    recent_event_limit: Annotated[int, typer.Option("--recent-event-limit", min=1, max=500)] = 20,
+    history_limit: Annotated[int, typer.Option("--history-limit", min=1, max=200)] = 10,
+    task_id: Annotated[str, typer.Option("--task-id")] = "latest",
+    no_dotenv: Annotated[bool, typer.Option("--no-dotenv")] = False,
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+) -> None:
+    """Generate a markdown report for current metrics and recent trend history."""
+    r = _repo_opt(repo)
+    ensure_repo_initialized(r)
+    cfg = _config_for_repo(r, no_dotenv=no_dotenv)
+    report = metrics_markdown_report(
+        r,
+        cfg,
+        recent_event_limit=recent_event_limit,
+        history_limit=history_limit,
+        task_id=task_id,
+    )
+    if out is not None:
+        out.write_text(report, encoding="utf-8")
+        typer.echo(str(out))
+    else:
+        typer.echo(report)
+
+
+@app.command("validate-provider")
+def cmd_validate_provider(
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    no_dotenv: Annotated[bool, typer.Option("--no-dotenv")] = False,
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+) -> None:
+    """Check whether the configured provider/model/key can complete a minimal reflection call."""
+    r = _repo_opt(repo)
+    ensure_repo_initialized(r)
+    cfg = _config_for_repo(r, no_dotenv=no_dotenv)
+    rep = validate_provider(r, cfg)
+    if json_output:
+        typer.echo(json.dumps(rep, indent=2, sort_keys=True))
+    else:
+        typer.echo(f"provider: {rep['provider']}")
+        typer.echo(f"model: {rep['model']}")
+        typer.echo(f"base_url: {rep['base_url']}")
+        typer.echo(f"api_key_env: {rep['api_key_env']}")
+        typer.echo(f"api_key_present: {rep['api_key_present']}")
+        typer.echo(f"ok: {rep['ok']}")
+        if rep["summary"]:
+            typer.echo(f"summary: {rep['summary']}")
+        if rep["risks"]:
+            typer.echo("risks:")
+            for risk in rep["risks"]:
+                typer.echo(f"- {risk}")
+    if not rep.get("ok", False):
+        raise typer.Exit(1)
+
+
 def main() -> None:
     app()
 
@@ -234,18 +385,21 @@ def cmd_doctor(
     repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     no_dotenv: Annotated[bool, typer.Option("--no-dotenv")] = False,
+    strict: Annotated[bool, typer.Option("--strict", help="Treat warnings as failures for exit status.")] = False,
 ) -> None:
     """Validate `.contextCLI/` and print actionable diagnostics."""
     r = _repo_opt(repo)
     ensure_repo_initialized(r)
     _config_for_repo(r, no_dotenv=no_dotenv)
     rep = doctor_report(r)
+    rep["strict"] = strict
+    rep["strict_ok"] = doctor_exit_ok(rep, strict=strict)
     if json_output:
         typer.echo(json.dumps(rep, indent=2, sort_keys=True))
     else:
         for ln in rep["lines"]:
             typer.echo(ln)
-    if not rep.get("ok", False):
+    if not rep.get("strict_ok", False):
         raise typer.Exit(1)
 
 
@@ -361,5 +515,18 @@ def cmd_hooks_status(
     if hs["configured_hooks_path"]:
         typer.echo(f"git core.hooksPath: {hs['configured_hooks_path']}")
         typer.echo(f"using_repo_hooks_dir: {hs['using_repo_hooks_dir']}")
+        typer.echo(f"using_direct_git_hooks_dir: {hs['using_direct_git_hooks_dir']}")
     else:
         typer.echo(f"direct_git_hook_exists: {hs['direct_git_hook_exists']}")
+
+
+@hooks_app.command("wire")
+def cmd_hooks_wire(
+    repo_hooks: Annotated[bool, typer.Option("--repo-hooks/--git-hooks", help="Use repo hooks/ (recommended) or direct .git/hooks.")] = True,
+    repo: Annotated[Optional[Path], typer.Option("--repo", exists=True, file_okay=False, dir_okay=True)] = None,
+) -> None:
+    """Configure Git to run hooks from `hooks/` or `.git/hooks`."""
+    r = _repo_opt(repo)
+    ensure_repo_initialized(r)
+    out = configure_hooks_path(r, use_repo_hooks_dir=repo_hooks)
+    typer.echo(json.dumps(out, indent=2, sort_keys=True))

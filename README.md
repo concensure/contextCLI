@@ -104,6 +104,32 @@ Show the current state:
 contextCLI status
 ```
 
+Show token-savings and context-size metrics:
+
+```bash
+contextCLI metrics
+```
+
+Record a metrics snapshot for trend tracking:
+
+```bash
+contextCLI metrics --record
+```
+
+Review recent metrics snapshots and the change from the previous snapshot:
+
+```bash
+contextCLI metrics-history
+```
+
+If only one snapshot exists, `metrics-history` treats it as a baseline instead of pretending there is already a trend.
+
+Generate a markdown report for current metrics plus recent trend history:
+
+```bash
+contextCLI metrics-report --out contextCLI-metrics.md
+```
+
 Add a short note and optionally compact immediately:
 
 ```bash
@@ -128,6 +154,14 @@ One common use case is token-saving handover between different models. For examp
 2. Switch to a cheaper or faster coding model.
 3. Resume with `contextCLI resume latest` instead of pasting a long planning transcript.
 
+`contextCLI metrics` gives an objective estimate of that saving by comparing:
+
+- the distilled resume context you would inject with `contextCLI`
+- the raw recent event log you would otherwise need to paste or summarize manually
+
+The default estimate uses a simple `chars / 4` token approximation and reports both absolute and percentage savings.
+It also reports whether the distilled resume context is actually smaller than the raw baseline and gives a simple recommendation.
+
 Run health checks:
 
 ```bash
@@ -136,6 +170,9 @@ contextCLI doctor
 
 `doctor` checks the storage files, provider configuration, hook wiring, and whether `.gitignore` and `.env.example` were set up safely.
 It exits with a non-zero status when it finds a problem, so you can use it in scripts or CI.
+When possible, it also prints the exact `contextCLI` command to fix the problem.
+`contextCLI doctor --json` includes machine-readable issue codes, severities, and summary counts.
+Use `contextCLI doctor --strict` if you want warnings to fail CI too.
 
 Normalize old or partially upgraded storage files to the current schema:
 
@@ -180,9 +217,12 @@ Install or remove hook templates:
 
 ```bash
 contextCLI hooks install
+contextCLI hooks wire --repo-hooks
 contextCLI hooks status
 contextCLI hooks uninstall
 ```
+
+`contextCLI hooks wire --repo-hooks` tells Git to use the repository `hooks/` folder. `contextCLI hooks wire --git-hooks` tells Git to use `.git/hooks` instead.
 
 ## Provider Setup
 
@@ -219,7 +259,28 @@ OPENROUTER_API_KEY=
 
 Use the env var name that matches your config. Do not put the actual key in `config.toml`.
 
-For local Ollama models, set `api_provider = "ollama"` and set `summarizer_model` to the local model name. Ollama usually does not need an API key. Configure the Ollama endpoint in `api_base_url` or with `OLLAMA_BASE_URL`.
+To verify that an OpenRouter setup is actually working:
+
+```bash
+contextCLI config
+contextCLI doctor
+contextCLI validate-provider
+contextCLI update-context --instruction "Verification run" --force
+```
+
+What to check:
+
+- `contextCLI config` should show:
+  - `api_provider: "openrouter"`
+  - `api_base_url: "https://openrouter.ai/api/v1"`
+  - `api_key_env: "OPENROUTER_API_KEY"`
+- `contextCLI doctor` should not report `missing_api_key`
+- `contextCLI validate-provider` should report `ok: true`
+- `contextCLI update-context --force` should return `"reflected": true` when the provider call succeeds
+
+If `doctor` reports `missing_api_key`, add `OPENROUTER_API_KEY=` to `.env` in the target repo or export it in the shell environment.
+
+For local Ollama models, set `api_provider = "ollama"` and set `summarizer_model` to the local model name. Ollama usually does not need an API key. A base URL alone is not enough: you also need a reachable Ollama server and a model name that exists locally. Configure the Ollama endpoint in `api_base_url` or with `OLLAMA_BASE_URL`.
 
 `contextCLI init` creates `.env.example` so a new user can see which variable names are supported before creating `.env`.
 
